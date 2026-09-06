@@ -82,8 +82,10 @@ get no picture. Use headless only to screenshot or record the page.
 ## Wire it into Codex
 
 This repository is already wired through `.codex/hooks.json`. Start the relay,
-open the page, then restart or resume Codex in this repository. Codex will ask
-you to review the project hook the first time; open `/hooks` and trust it.
+open the page, then start a **new Codex task** in this repository. Codex loads
+lifecycle hooks when a task starts; a task that was already open when the hook
+file was added will not pick it up. Codex will ask you to review the project
+hook the first time; open `/hooks` and trust it.
 
 ```bash
 python3 relay.py
