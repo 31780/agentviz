@@ -151,6 +151,36 @@ network. Set
 `AGENTVIZ_DISABLE=1` to mute either bridge. The Python one takes `AGENTVIZ_URL`
 and `AGENTVIZ_DEBUG=1`; the shell one takes `AGENTVIZ_HOST` and `AGENTVIZ_PORT`.
 
+## Any other agent
+
+`run` wraps a command in a pty and narrates it. The agent needs to know nothing
+about agentviz — its input and output pass through untouched, and the events
+are inferred from what goes past:
+
+```bash
+python3 agentviz.py run -- codex "fix the failing test"
+python3 agentviz.py run -- aider
+python3 agentviz.py run --agent scraper -- ./my-agent.sh
+```
+
+Start and exit become `thinking` and `response` (or `error`, with the exit
+code). Output becomes `token` pulses, rate-limited so a chatty agent cannot
+flood the field. Lines that look like an agent narrating a tool call become
+`tool_call`:
+
+```
+Running: npm test          ->  tool_call npm
+Reading src/index.js       ->  tool_call reading
+$ git status               ->  tool_call git
+● Bash(npm test)           ->  tool_call Bash
+```
+
+Those patterns are guesses about how agents describe themselves, not a
+contract. An agent that changes its output format will quietly stop producing
+`tool_call` events and keep producing everything else, which is why nothing
+depends on them. The wrapper is transparent otherwise: output is byte-identical
+to running the command directly, and the exit code is passed through.
+
 ## Hook up an agent
 
 Python (any agent loop, any framework):

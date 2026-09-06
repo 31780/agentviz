@@ -19,6 +19,7 @@ timeout, and failures are swallowed unless you pass strict=True.
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -81,6 +82,127 @@ class Viz:
             if self.strict:
                 raise
             return False
+
+
+# ------------------------------------------------------------------- run
+
+# Wrap any terminal agent. The agent needs to know nothing about agentviz:
+# it runs inside a pty, its input and output pass through untouched, and the
+# events are inferred from what appears on the way past.
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\r")
+
+# Ordered: the first pattern that matches a line wins. These are guesses about
+# how agents narrate themselves, not a contract -- an agent that changes its
+# output format will quietly stop producing tool_call events, which is why
+# nothing else depends on them.
+_TOOL_PATTERNS = [
+    (re.compile(r"^\s*[\u25cf\u23fa\u2022]\s*(\w[\w.-]*)\("), 1),   # Claude Code: bullet Tool(args)
+    (re.compile(r"^\s*(?:Running|Executing|Invoking|Calling)[: ]+(.+)$"), 1),
+    (re.compile(r"^\s*(?:Tool|Action|Function)(?: call)?[: ]+([\w.-]+)"), 1),
+    (re.compile(r"^\s*[$>\u276f]\s+(\S.*)$"), 1),                       # a shell command echoed
+    (re.compile(r"^\s*(?:Reading|Writing|Editing|Creating|Patching)\s+(\S+)"), 0),
+    (re.compile(r"^\s*(?:Searching|Grepping|Fetching|Downloading)\s+(.+)$"), 0),
+]
+
+_VERB = re.compile(r"^\s*(\w+)")
+
+
+def _clean(text):
+    return " ".join(_ANSI.sub(" ", text).split())
+
+
+def _detect_tool(line):
+    """Return (name, argument) if this line looks like a tool call."""
+    for pattern, group in _TOOL_PATTERNS:
+        m = pattern.match(line)
+        if not m:
+            continue
+        if group == 1:
+            arg = m.group(1).strip()
+            name = arg.split()[0] if arg else "tool"
+            return name[:32], arg[:160]
+        verb = _VERB.match(line)
+        return (verb.group(1).lower() if verb else "tool")[:32], m.group(1)[:160]
+    return None
+
+
+def run(argv, agent=None, url=DEFAULT_URL, detect_tools=True):
+    """Run a command inside a pty, narrating it to the visualiser."""
+    import pty
+    import shutil
+
+    # pty.spawn forks and execs in the child. A failed exec raises there, and
+    # the child would then carry on running this program, so the command is
+    # resolved before any fork happens.
+    exe = shutil.which(argv[0])
+    if not exe:
+        print("agentviz: command not found: %s" % argv[0], file=sys.stderr)
+        Viz(agent=agent or "agentviz", url=url, timeout=0.2).error(
+            "command not found: %s" % argv[0])
+        return 127
+    argv = [exe] + list(argv[1:])
+
+    viz = Viz(agent=agent or os.path.basename(argv[0]), url=url, timeout=0.2)
+    viz.thinking("$ " + " ".join(argv)[:200])
+
+    state = {"buf": b"", "last_token": 0.0, "open_tool": None, "quiet": time.time()}
+    TOKEN_EVERY = 0.15          # never more than ~7 token events a second
+
+    def observe(chunk):
+        now = time.time()
+        state["quiet"] = now
+        state["buf"] += chunk
+        # Only whole lines are inspected; a partial last line waits for more.
+        if b"\n" in state["buf"]:
+            *lines, state["buf"] = state["buf"].split(b"\n")
+            if len(state["buf"]) > 8192:            # a line that never ends
+                state["buf"] = state["buf"][-4096:]
+            for raw in lines:
+                line = _clean(raw.decode("utf-8", "replace"))
+                if not line:
+                    continue
+                hit = _detect_tool(line) if detect_tools else None
+                if hit:
+                    if state["open_tool"]:
+                        viz.tool_done(state["open_tool"])
+                    viz.tool(hit[0], hit[1])
+                    state["open_tool"] = hit[0]
+                elif now - state["last_token"] > TOKEN_EVERY:
+                    state["last_token"] = now
+                    viz.token(line[:120])
+        elif now - state["last_token"] > TOKEN_EVERY:
+            # Output with no newline yet -- a spinner, or a token stream.
+            text = _clean(state["buf"][-120:].decode("utf-8", "replace"))
+            if text:
+                state["last_token"] = now
+                viz.token(text)
+
+    def master_read(fd):
+        data = os.read(fd, 4096)
+        if data:
+            try:
+                observe(data)
+            except Exception:
+                pass                 # never let narration break the agent
+        return data
+
+    try:
+        status = pty.spawn(argv, master_read)
+    except Exception as exc:
+        viz.error(str(exc)[:200])
+        raise
+
+    if state["open_tool"]:
+        viz.tool_done(state["open_tool"])
+    code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
+    if code == 0:
+        viz.response("%s finished" % os.path.basename(argv[0]))
+    else:
+        viz.error("%s exited %s" % (os.path.basename(argv[0]), code))
+    time.sleep(0.05)
+    viz.idle()
+    return code if isinstance(code, int) else 0
 
 
 # ----------------------------------------------------------------- watch
@@ -222,9 +344,28 @@ if __name__ == "__main__":
     url = args[1] if len(args) > 1 else DEFAULT_URL
     if args and args[0] == "demo":
         sys.exit(demo(url))
+    if args and args[0] == "run":
+        rest, agent = args[1:], None
+        while rest:
+            if rest[0] == "--":
+                rest = rest[1:]
+                break
+            if rest[0] == "--agent" and len(rest) > 1:
+                agent, rest = rest[1], rest[2:]
+                continue
+            if rest[0].startswith("--agent="):
+                agent, rest = rest[0].split("=", 1)[1], rest[1:]
+                continue
+            break
+        if not rest:
+            print("usage: python3 agentviz.py run [--agent NAME] -- <command...>",
+                  file=sys.stderr)
+            sys.exit(2)
+        sys.exit(run(rest, agent=agent))
     if args and args[0] == "watch":
         ws = args[1] if len(args) > 1 else None
         sys.exit(watch(ws, color=sys.stdout.isatty() and "--no-color" not in args))
     print(__doc__.strip())
     print("\nusage: python3 agentviz.py demo  [relay-url]     drive the field")
     print("       python3 agentviz.py watch [ws-url]        follow it in the terminal")
+    print("       python3 agentviz.py run -- <command>      narrate any agent")
