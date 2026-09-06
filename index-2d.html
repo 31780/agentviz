@@ -220,6 +220,13 @@
 
   // ---------- event protocol ----------
   function handle(ev) {
+    if (ev && ev.type && ev.type !== 'idle') {
+      lastEvent = performance.now();
+      // Wake the field now rather than waiting out the idle interval. Clearing
+      // the timer without asking for a frame would stop the loop dead, so the
+      // two always happen together.
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; requestAnimationFrame(frame); }
+    }
     if (!ev || typeof ev !== 'object' || !ev.type) return;
     if (ev.agent) agent = String(ev.agent);
     const text = ev.text == null ? '' : String(ev.text);
@@ -340,6 +347,35 @@
     }
   }
 
+  // Idle throttling. The field only needs a high frame rate while something is
+  // happening; between events it just breathes, and that reads the same at a
+  // low rate. Left open all day, a full-rate idle canvas is the single most
+  // expensive part of the whole system, so idle frames are paced instead.
+  // ?idlefps=n overrides, ?idlefps=60 restores the old behaviour.
+  const IDLE_FPS = Math.max(1, Math.min(60, +params.get('idlefps') || 10));
+  const IDLE_MS = 1000 / IDLE_FPS;
+  const SETTLE = 2500;          // stay at full rate this long after any event
+  let idleTimer = null, lastEvent = -Infinity;
+
+  // Some events -- a tool call above all -- animate without moving the state
+  // out of idle, so the pacing keys off recent activity as well as state.
+  // Anything still moving on screen keeps the full frame rate.
+  function busy() {
+    return state !== 'idle'
+      || performance.now() - lastEvent < SETTLE
+      // A satellite whose tool_result never arrives -- a session killed
+      // mid-call -- must not pin the frame rate up forever.
+      || sats.some(s => (s.alive && tNow - s.born < 30000) || (!s.alive && tNow - s.died < 1400))
+      || ripples.length > 0;
+  }
+
+  function schedule() {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+    if (busy()) requestAnimationFrame(frame);
+    else idleTimer = setTimeout(() => requestAnimationFrame(frame), IDLE_MS);
+  }
+
   let last = performance.now();
   function frame(now) {
     const dt = Math.min((now - last) / 1000, .05); last = now; tNow = now;
@@ -442,7 +478,7 @@
     }
     ctx.globalCompositeOperation = 'source-over';
 
-    requestAnimationFrame(frame);
+    schedule();
   }
 
   build(); resize(); renderCaption(); requestAnimationFrame(frame);
