@@ -7,7 +7,8 @@ index.html            the visualizer (raw WebGL, no build step, no dependencies)
 index-2d.html         the earlier small canvas version with captions and a log
 relay.py              tiny relay: agents push events in, browsers subscribe
 agentviz.py           zero-dep Python emitter for your agents
-hooks/claude_code.py  bridge that drives the field from Claude Code
+hooks/claude_code.sh  bridge that drives the field from Claude Code (fast)
+hooks/claude_code.py  the same bridge in portable Python
 ```
 
 Python 3.8+ and a browser. No pip install, no build step, no dependencies —
@@ -41,20 +42,20 @@ python3 agentviz.py demo
 
 ## Wire it into Claude Code
 
-`hooks/claude_code.py` turns a Claude Code session into a light show. Start the
+`hooks/claude_code.sh` turns a Claude Code session into a light show. Start the
 relay, open the page, then add this to `~/.claude/settings.json` (global, so it
 fires in every repo) or to a single project's `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "PreToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "Notification":     [{ "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "Stop":             [{ "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }],
-    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.py" }] }]
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "PreToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }]
   }
 }
 ```
@@ -77,12 +78,36 @@ lighting up.
 Claude Code has no per-token hook, so `token` events never fire from this
 bridge — the field breathes on thinking and blooms on the answer instead.
 
+### Cost
+
+Claude Code fires two hooks per tool call, so the bridge runs constantly and its
+startup cost is the whole story. Measured on an M-series Mac:
+
+| bridge | per hook | per tool call | transient memory |
+|---|---|---|---|
+| `claude_code.sh` | 20 ms | 39 ms | 2.8 MB |
+| `claude_code.py` | 106 ms | 212 ms | 16.8 MB |
+
+The shell version does the same mapping with one `jq` pass and bash's built-in
+`/dev/tcp`, skipping Python's ~107 ms interpreter startup — which is not
+fixable by interpreter choice (Homebrew 3.12 and the Xcode python are within
+2 ms, and `-S -E` is worse). It falls back to the Python bridge automatically
+when `jq` is absent, so use `claude_code.sh` unless you need pure portability.
+
+Neither bridge leaves anything resident: the cost is process startup, paid per
+event and returned immediately.
+
+The relay itself is ~19 MB resident and idles at zero CPU. The expensive part
+of the whole system is the browser tab — `index.html` holds several thousand
+WebGL nodes, so on a machine under memory pressure prefer `--page 2d`, or cap
+the 3D field with `?n=1500`.
+
 Two properties make this safe to leave installed everywhere: the bridge never
 writes to stdout (Claude Code feeds hook stdout back into the model's context
 on some events), and it always exits 0 within a 250 ms timeout, so a relay
 that is down or gone can never slow down or wedge a coding session. Set
-`AGENTVIZ_DISABLE=1` to mute it, `AGENTVIZ_URL` to point at another relay, or
-`AGENTVIZ_DEBUG=1` to see connection errors on stderr.
+`AGENTVIZ_DISABLE=1` to mute either bridge. The Python one takes `AGENTVIZ_URL`
+and `AGENTVIZ_DEBUG=1`; the shell one takes `AGENTVIZ_HOST` and `AGENTVIZ_PORT`.
 
 ## Hook up an agent
 
