@@ -20,6 +20,17 @@ python3 relay.py          # serves the page + relays events
 open http://localhost:8766
 ```
 
+`index.html` is the ambient view: pulses and brightness, deliberately no text.
+`index-2d.html` is the legible one — the caption names the tool and its
+argument (`Bash` / `python3 relay.py -v`), and the **Log** button opens a
+scrolling history. Serve that one at `/` instead:
+
+```bash
+python3 relay.py --page 2d
+```
+
+Either page is always reachable by name, whichever is the default.
+
 The page has no visible controls. Press **/** (or double-tap) to show the connection field and the Demo button, **d** to toggle the demo. URL params: `?demo` autoplays, `?hud` shows controls, `?n=8000` sets node count (default 4800 desktop, 2600 mobile).
 
 Smoke test the full path from another terminal:

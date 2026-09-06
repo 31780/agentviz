@@ -172,7 +172,8 @@ def ws_server(host: str, port: int) -> None:
 
 # --------------------------------------------------------------------- http
 
-PAGES = {"/": "index.html", "/index.html": "index.html", "/index-2d.html": "index-2d.html"}
+PAGES = {"index.html", "index-2d.html"}
+DEFAULT_PAGE = "index.html"      # overridden by --page
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -207,8 +208,8 @@ class Handler(BaseHTTPRequestHandler):
                 n = len(_clients)
             return self._send(200, json.dumps({"ok": True, "clients": n}).encode(),
                               "application/json")
-        name = PAGES.get(path)
-        if not name:
+        name = self.server.default_page if path == "/" else path.lstrip("/")
+        if name not in PAGES:
             return self._send(404, b"not found")
         try:
             with open(os.path.join(HERE, name), "rb") as fh:
@@ -248,6 +249,9 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="bind address (0.0.0.0 to expose)")
     ap.add_argument("--port", type=int, default=8766, help="http port")
     ap.add_argument("--ws-port", type=int, default=8765, help="websocket port")
+    ap.add_argument("--page", choices=("3d", "2d"), default="3d",
+                    help="which page to serve at / (default: 3d). "
+                         "2d is the captioned view with a tool log.")
     ap.add_argument("-v", "--verbose", action="store_true", help="log every event")
     args = ap.parse_args()
 
@@ -256,9 +260,12 @@ def main():
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
     httpd.verbose = args.verbose
+    httpd.default_page = "index-2d.html" if args.page == "2d" else "index.html"
     shown = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
     print("agentviz relay")
-    print("  page    http://%s:%d" % (shown, args.port))
+    other = "index.html" if args.page == "2d" else "index-2d.html"
+    print("  page    http://%s:%d          (%s)" % (shown, args.port, httpd.default_page))
+    print("  other   http://%s:%d/%s" % (shown, args.port, other))
     print("  events  POST http://%s:%d/event" % (shown, args.port))
     print("  socket  ws://%s:%d" % (shown, args.ws_port))
     try:
