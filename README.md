@@ -55,7 +55,23 @@ python3 agentviz.py watch
 15:01:01 response     neuralLink     same feed, ~0 graphics cost
 ```
 
-It costs ~23 MB against a browser tab's hundreds, and it is the right view when
+It costs ~23 MB against a browser's hundreds — which matters if you leave the
+visualiser up all day. One tab showing `index-2d.html`, each browser given a
+fresh profile, summed RSS across every process it spawned (shared pages are
+counted more than once, so read these as a ranking, not as absolutes):
+
+| browser | | processes |
+|---|---|---|
+| Brave | 851 MB | 6 |
+| Chrome | 1242 MB | 9 |
+| Firefox | 1822 MB | 13 |
+| `agentviz.py watch` | **23 MB** | 1 |
+
+The gap between any browser and the terminal is two orders of magnitude, so if
+the goal is to keep it running permanently, the terminal view is the answer and
+the choice of browser is a detail. Among browsers, fewer processes wins.
+
+The terminal view is also the right one when
 you want to read what an agent is doing rather than watch it. A headless
 browser is *not* a cheaper way to run the visualiser: it is still a full
 browser, and nothing renders to a screen you can see, so you pay the cost and
