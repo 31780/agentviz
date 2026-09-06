@@ -83,6 +83,105 @@ class Viz:
             return False
 
 
+# ----------------------------------------------------------------- watch
+
+# A terminal view of the same feed. No browser, no canvas, no GPU -- just the
+# events as they arrive. This is the cheapest way to watch an agent work.
+
+_C = {"thinking": "\033[36m", "token": "\033[37m", "tool_call": "\033[33m",
+      "tool_result": "\033[32m", "response": "\033[1;37m", "error": "\033[31m",
+      "idle": "\033[90m"}
+_DIM, _OFF = "\033[90m", "\033[0m"
+
+
+def _ws_connect(url):
+    """Minimal RFC 6455 client handshake. Returns a connected socket."""
+    import base64
+    import socket
+    rest = url.split("://", 1)[-1]
+    hostport = rest.split("/", 1)[0]
+    host, _, port = hostport.partition(":")
+    sock = socket.create_connection((host or "127.0.0.1", int(port or 8765)), timeout=10)
+    key = base64.b64encode(os.urandom(16)).decode()
+    sock.sendall((
+        "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (hostport, key)
+    ).encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("relay closed during handshake")
+        buf += chunk
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    if b" 101 " not in head.split(b"\r\n")[0]:
+        raise ConnectionError("relay refused the upgrade")
+    return sock, rest
+
+
+def watch(url=None, color=True):
+    """Print every event the relay fans out, until interrupted."""
+    import struct
+    url = url or os.environ.get("AGENTVIZ_WS", "ws://127.0.0.1:8765")
+    try:
+        sock, rest = _ws_connect(url)
+    except (OSError, ValueError, ConnectionError) as exc:
+        print("cannot reach %s (%s) — is relay.py running?" % (url, exc), file=sys.stderr)
+        return 1
+
+    def read(n):
+        nonlocal rest
+        while len(rest) < n:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("relay closed")
+            rest += chunk
+        out, rest = rest[:n], rest[n:]
+        return out
+
+    print("watching %s — ctrl-c to stop" % url)
+    try:
+        while True:
+            b0, b1 = struct.unpack("!BB", read(2))
+            n = b1 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", read(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", read(8))[0]
+            if b1 & 0x80:
+                read(4)
+            data = read(n) if n else b""
+            if (b0 & 0x0F) != 0x1:
+                continue
+            try:
+                ev = json.loads(data.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            type = ev.get("type", "?")
+            label = ev.get("name") or ""
+            text = (ev.get("text") or "").replace("\n", " ")
+            stamp = time.strftime("%H:%M:%S")
+            agent = ev.get("agent") or ""
+            if color:
+                print("%s%s%s %s%-12s%s %s%-14s%s %s%s %s" % (
+                    _DIM, stamp, _OFF, _C.get(type, ""), type, _OFF,
+                    _DIM, agent[:14], _OFF, label and label + " " or "", text, _OFF))
+            else:
+                print("%s %-12s %-14s %s %s" % (stamp, type, agent[:14], label, text))
+            sys.stdout.flush()
+    except KeyboardInterrupt:
+        print("\nbye")
+    except (OSError, ConnectionError, struct.error) as exc:
+        print("disconnected: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return 0
+
+
 # ------------------------------------------------------------------ demo
 
 DEMO = [
@@ -123,5 +222,9 @@ if __name__ == "__main__":
     url = args[1] if len(args) > 1 else DEFAULT_URL
     if args and args[0] == "demo":
         sys.exit(demo(url))
+    if args and args[0] == "watch":
+        ws = args[1] if len(args) > 1 else None
+        sys.exit(watch(ws, color=sys.stdout.isatty() and "--no-color" not in args))
     print(__doc__.strip())
-    print("\nusage: python3 agentviz.py demo [relay-url]")
+    print("\nusage: python3 agentviz.py demo  [relay-url]     drive the field")
+    print("       python3 agentviz.py watch [ws-url]        follow it in the terminal")

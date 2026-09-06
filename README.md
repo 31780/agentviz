@@ -40,6 +40,27 @@ Smoke test the full path from another terminal:
 python3 agentviz.py demo
 ```
 
+### Watching without a browser
+
+`watch` follows the same feed in the terminal — every event, colour-coded, no
+canvas and no GPU:
+
+```bash
+python3 agentviz.py watch
+```
+
+```
+15:01:00 tool_call    neuralLink     Bash python3 agentviz.py watch
+15:01:00 tool_result  neuralLink     Bash
+15:01:01 response     neuralLink     same feed, ~0 graphics cost
+```
+
+It costs ~23 MB against a browser tab's hundreds, and it is the right view when
+you want to read what an agent is doing rather than watch it. A headless
+browser is *not* a cheaper way to run the visualiser: it is still a full
+browser, and nothing renders to a screen you can see, so you pay the cost and
+get no picture. Use headless only to screenshot or record the page.
+
 ## Wire it into Claude Code
 
 `hooks/claude_code.sh` turns a Claude Code session into a light show. Start the
