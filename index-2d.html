@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent mind</title>
+<style>
+  :root {
+    --ink: #06080E;
+    --dim: #2C3A55;
+    --muted: #8A97B0;
+    --bone: #EEE9DC;
+    --ice: #9DD6E3;
+    --ember: #E6A64B;
+    --alarm: #DF5A4E;
+  }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--bone);
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 20px 24px;
+    display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; pointer-events: none; }
+  .caption { max-width: 54ch; line-height: 1.45; font-size: 15px; }
+  .caption .state { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+  .caption .state b { color: var(--bone); font-weight: 600; }
+  .caption .text { color: #C9C3B4; white-space: pre-wrap; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .caption .text.hint { color: var(--muted); font-size: 14px; }
+
+  .controls { pointer-events: auto; display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+  .controls input { background: transparent; border: 0; border-bottom: 1px solid var(--dim); color: var(--bone);
+    font: inherit; padding: 4px 2px; width: 22ch; outline: none; }
+  .controls input:focus { border-bottom-color: var(--ice); }
+  .controls button { background: transparent; border: 1px solid var(--dim); color: var(--bone); font: inherit;
+    padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+  .controls button:hover { border-color: var(--muted); }
+  .controls button:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+  .controls button.active { border-color: var(--ice); color: var(--ice); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; flex: none; }
+  .dot.on { background: var(--ice); box-shadow: 0 0 8px var(--ice); }
+
+  .log { position: fixed; top: 0; right: 0; bottom: 84px; width: min(380px, 100%); padding: 20px 24px; overflow: auto;
+    background: linear-gradient(90deg, rgba(6,8,14,0), rgba(6,8,14,.94) 28%); font-size: 12.5px; line-height: 1.5;
+    transform: translateX(100%); transition: transform .25s ease; pointer-events: none; box-sizing: border-box; }
+  .log.open { transform: none; pointer-events: auto; }
+  .log .e { color: var(--muted); margin-bottom: 7px; word-break: break-word; }
+  .log .e time { color: var(--dim); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .log .e span { color: var(--bone); margin-right: 6px; }
+  .log .e.tool span { color: var(--ember); }
+  .log .e.error span { color: var(--alarm); }
+
+  @media (max-width: 640px) {
+    .hud { flex-direction: column; align-items: stretch; padding: 16px; }
+    .controls { flex-wrap: wrap; }
+    .controls input { width: 100%; }
+    .log { bottom: 160px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .log { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Animated view of the agent's activity"></canvas>
+
+<div class="log" id="log" aria-live="polite"></div>
+
+<div class="hud">
+  <div class="caption">
+    <div class="state" id="state"><b>agent</b> is idle</div>
+    <div class="text hint" id="text">Waiting for an agent. Start the demo to see it move.</div>
+  </div>
+  <div class="controls">
+    <span class="dot" id="dot" title="Connection"></span>
+    <input id="url" placeholder="ws://localhost:8765" aria-label="Relay address">
+    <button id="connect">Connect</button>
+    <button id="demo">Demo</button>
+    <button id="logbtn" aria-controls="log" aria-expanded="false">Log</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- helpers ----------
+  const $ = s => document.querySelector(s);
+  const cv = $('#c'), ctx = cv.getContext('2d');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const C = { dim:[44,58,85], bone:[238,233,220], ice:[157,214,227], ember:[230,166,75], alarm:[223,90,78] };
+  const rgba = (c, a) => `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+  const mix = (a, b, t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const shuffle = arr => arr.sort(() => Math.random() - .5);
+  const angDist = (a, b) => { const d = Math.abs(a - b) % (Math.PI * 2); return d > Math.PI ? Math.PI * 2 - d : d; };
+
+  // ---------- graph ----------
+  let W, H, R, cx, cy, rot = 0, tNow = 0;
+  const nodes = [], edges = [], signals = [], ripples = [], sats = [];
+
+  const mkNode = (ring, a, r) => ({ ring, a, r, x: 0, y: 0, e: 0, col: C.ice, adj: [], seed: Math.random() * 1000 });
+  const other = (e, n) => e.a === n ? e.b : e.a;
+  function addEdge(a, b) {
+    if (a === b || a.adj.some(e => other(e, a) === b)) return null;
+    const e = { a, b, e: 0, col: C.ice }; edges.push(e); a.adj.push(e); b.adj.push(e); return e;
+  }
+  function edgeBetween(a, b) { return a.adj.find(e => other(e, a) === b); }
+
+  function build() {
+    nodes.push(mkNode(0, 0, 0));
+    [[9, .3], [17, .58], [27, .88]].forEach(([n, rad], i) => {
+      for (let k = 0; k < n; k++)
+        nodes.push(mkNode(i + 1, k / n * Math.PI * 2 + (i % 2 ? Math.PI / n : 0) + rand(-.07, .07), rad * rand(.95, 1.05)));
+    });
+    for (const n of nodes) {
+      if (!n.ring) continue;
+      const inner = nodes.filter(m => m.ring === n.ring - 1).sort((p, q) => angDist(p.a, n.a) - angDist(q.a, n.a));
+      const k = n.ring === 1 ? 1 : (Math.random() < .5 ? 1 : 2);
+      for (let i = 0; i < k && i < inner.length; i++) addEdge(inner[i], n);
+    }
+    for (let ri = 1; ri <= 3; ri++) {
+      const ring = nodes.filter(m => m.ring === ri).sort((p, q) => p.a - q.a);
+      ring.forEach((n, i) => { if (ri === 3 && Math.random() < .3) return; addEdge(n, ring[(i + 1) % ring.length]); });
+    }
+  }
+
+  function pathTo(target, from = nodes[0]) {
+    const prev = new Map([[from, null]]); const q = [from];
+    while (q.length) {
+      const n = q.shift(); if (n === target) break;
+      for (const e of n.adj) { const m = other(e, n); if (!prev.has(m)) { prev.set(m, n); q.push(m); } }
+    }
+    if (!prev.has(target)) return null;
+    const p = []; for (let n = target; n !== from; n = prev.get(n)) p.unshift(n); return p;
+  }
+  function walkOut(n, depth) {
+    const p = []; let prev = null;
+    for (let i = 0; i < depth; i++) {
+      const outs = n.adj.map(e => other(e, n)).filter(m => m !== prev && m.ring >= n.ring && m.ring < 4);
+      if (!outs.length) break; prev = n; n = pick(outs); p.push(n);
+    }
+    return p;
+  }
+
+  // ---------- signals ----------
+  function spawn(from, path, col, speed, spread) {
+    if (!path || !path.length) return;
+    signals.push({ from, to: path[0], rest: path.slice(1), t: 0, speed, col, spread });
+  }
+  function stepSignal(s, dt) {
+    s.t += dt * s.speed;
+    if (s.t < 1) return true;
+    const n = s.to; n.e = 1; n.col = s.col;
+    const e = edgeBetween(s.from, n); if (e) { e.e = 1; e.col = s.col; }
+    if (s.rest.length) { s.from = n; s.to = s.rest.shift(); s.t = 0; return true; }
+    if (s.spread > 0 && n.ring < 4) {
+      const outs = n.adj.map(x => other(x, n)).filter(m => m !== s.from && m.ring < 4);
+      shuffle(outs).slice(0, Math.random() < .5 ? 1 : 2).forEach(m => spawn(n, [m], s.col, s.speed, s.spread - 1));
+    }
+    return false;
+  }
+  const ripple = (col, w = 1) => { if (!reduce) ripples.push({ t: 0, col, w }); };
+
+  // ---------- agent state ----------
+  let state = 'idle', agent = 'agent', caption = '', tokenCount = 0, lastToken = 0, settleAt = 0;
+  const timers = { idle: 1, think: 0 };
+
+  function setState(s) { state = s; renderCaption(); }
+  function renderCaption() {
+    const live = sats.filter(s => s.alive);
+    const verb = live.length ? `is using ${live[live.length - 1].name}` :
+      { idle: 'is idle', thinking: 'is thinking', streaming: 'is answering', done: 'answered', error: 'hit an error' }[state];
+    const st = $('#state'); st.textContent = '';
+    const b = document.createElement('b'); b.textContent = agent; st.append(b, ' ' + verb);
+    const t = $('#text'); t.classList.toggle('hint', !caption); t.textContent = caption || 'Waiting for an agent. Start the demo to see it move.';
+  }
+
+  function tokenPulse() {
+    const now = performance.now();
+    tokenCount++;
+    nodes[0].e = 1; nodes[0].col = C.bone;
+    if (now - lastToken < 28) return;
+    lastToken = now;
+    spawn(nodes[0], walkOut(nodes[0], 3), C.bone, rand(2.6, 3.4), 0);
+    if (tokenCount % 7 === 0) ripple(C.bone, .8);
+  }
+  function bloom() {
+    for (const n of nodes) if (n.ring === 3) spawn(nodes[0], pathTo(n), C.bone, 2.2, 0);
+    ripple(C.bone, 1.4); setTimeout(() => ripple(C.bone, 1), 220);
+  }
+  function flash() {
+    for (const n of nodes) { n.e = .75; n.col = C.alarm; }
+    for (const e of edges) { e.e = .6; e.col = C.alarm; }
+    ripple(C.alarm, 1.6);
+  }
+  function tool(name, text) {
+    if (sats.filter(s => s.alive).length >= 6) { const old = sats.find(s => s.alive); toolDone(old.name); }
+    const anchor = pick(nodes.filter(n => n.ring === 3));
+    const sat = mkNode(4, anchor.a + rand(-.08, .08), 1.17); sat.name = name; sat.alive = true; sat.born = tNow; sat.col = C.ember;
+    sat.edge = addEdge(anchor, sat); sat.anchor = anchor; sats.push(sat);
+    spawn(nodes[0], [...pathTo(anchor), sat], C.ember, 2.6, 0);
+    renderCaption();
+  }
+  function toolDone(name) {
+    const live = sats.filter(s => s.alive);
+    const sat = [...live].reverse().find(s => s.name === name) || live[live.length - 1];
+    if (!sat) return;
+    sat.alive = false; sat.died = tNow;
+    const back = pathTo(sat.anchor); back.reverse(); back.shift(); back.push(nodes[0]);
+    spawn(sat, [sat.anchor, ...back], C.ember, 2.6, 0);
+    renderCaption();
+  }
+  function reapSats() {
+    for (let i = sats.length - 1; i >= 0; i--) {
+      const s = sats[i];
+      if (!s.alive && tNow - s.died > 1400) {
+        const ei = edges.indexOf(s.edge); if (ei >= 0) edges.splice(ei, 1);
+        s.anchor.adj = s.anchor.adj.filter(e => e !== s.edge);
+        sats.splice(i, 1);
+      }
+    }
+  }
+
+  // ---------- event protocol ----------
+  function handle(ev) {
+    if (!ev || typeof ev !== 'object' || !ev.type) return;
+    if (ev.agent) agent = String(ev.agent);
+    const text = ev.text == null ? '' : String(ev.text);
+    log(ev);
+    switch (ev.type) {
+      case 'thinking': setState('thinking'); if (text) caption = text; break;
+      case 'token':
+        if (state !== 'streaming') { setState('streaming'); caption = ''; tokenCount = 0; }
+        caption += text; tokenPulse(); break;
+      case 'tool_call': tool(ev.name || 'tool', text); if (text) caption = text; break;
+      case 'tool_result': toolDone(ev.name); if (state === 'idle') setState('thinking'); break;
+      case 'response': setState('done'); if (text) caption = text; bloom(); settleAt = tNow + 5000; break;
+      case 'error': setState('error'); if (text) caption = text; flash(); settleAt = tNow + 6000; break;
+      case 'idle': setState('idle'); break;
+      default: return;
+    }
+    renderCaption();
+  }
+  window.agentviz = { handle };
+  addEventListener('message', e => { if (e.data && e.data.type) handle(e.data); });
+
+  // ---------- log ----------
+  const logEl = $('#log'); let logCount = 0;
+  function log(ev) {
+    const d = document.createElement('div');
+    d.className = 'e' + (ev.type.startsWith('tool') ? ' tool' : ev.type === 'error' ? ' error' : '');
+    const t = new Date().toTimeString().slice(0, 8);
+    const label = ev.type + (ev.name ? ' ' + ev.name : '');
+    d.innerHTML = `<time>${t}</time><span></span>`; d.querySelector('span').textContent = label;
+    if (ev.text && ev.type !== 'token') d.append(document.createTextNode(String(ev.text).slice(0, 200)));
+    else if (ev.type === 'token') d.append(document.createTextNode(JSON.stringify(ev.text || '')));
+    logEl.prepend(d);
+    if (++logCount > 250) logEl.lastChild.remove();
+  }
+  $('#logbtn').onclick = () => {
+    const open = logEl.classList.toggle('open');
+    $('#logbtn').classList.toggle('active', open); $('#logbtn').setAttribute('aria-expanded', open);
+  };
+  addEventListener('keydown', e => { if (e.key === 'l' && e.target.tagName !== 'INPUT') $('#logbtn').click(); });
+
+  // ---------- websocket ----------
+  const params = new URL(location).searchParams;
+  let wsUrl = params.get('ws') || 'ws://localhost:8765', ws = null, retryT = null;
+  $('#url').value = wsUrl;
+  function setConn(on) { $('#dot').classList.toggle('on', on); $('#dot').title = on ? 'Connected to ' + wsUrl : 'Not connected'; }
+  function connect() {
+    clearTimeout(retryT);
+    if (ws) { ws.onclose = null; try { ws.close(); } catch (e) {} }
+    try { ws = new WebSocket(wsUrl); } catch (e) { setConn(false); retryT = setTimeout(connect, 3000); return; }
+    ws.onopen = () => setConn(true);
+    ws.onmessage = m => {
+      for (const line of String(m.data).split('\n')) {
+        if (!line.trim()) continue;
+        try { handle(JSON.parse(line)); } catch (e) {}
+      }
+    };
+    ws.onclose = () => { setConn(false); retryT = setTimeout(connect, 3000); };
+    ws.onerror = () => {};
+  }
+  $('#connect').onclick = () => { wsUrl = $('#url').value.trim() || 'ws://localhost:8765'; connect(); };
+  $('#url').addEventListener('keydown', e => { if (e.key === 'Enter') $('#connect').click(); });
+  connect();
+
+  // ---------- demo ----------
+  let demoOn = false, demoT = null;
+  const DEMO = [
+    ['thinking', { text: 'Which hosts in rack 12 are degraded?' }, 1500],
+    ['tool_call', { name: 'dcim.query', text: 'rack=12 status=degraded' }, 1400],
+    ['tool_result', { name: 'dcim.query' }, 700],
+    ['thinking', { text: 'Cross-checking those hosts against the production pool list' }, 1300],
+    ['tool_call', { name: 'ipam.lookup' }, 1000],
+    ['tool_result', { name: 'ipam.lookup' }, 600],
+    ['stream', { text: 'Three hosts in rack 12 report degraded arrays: dc1-r12-07, dc1-r12-11 and dc1-r12-19. None of them sit in a production pool, so there is no user impact. I would schedule the disk swaps for the Tuesday maintenance window.' }, 0],
+    ['response', {}, 4500],
+    ['idle', {}, 2500],
+  ];
+  function demoStep(i) {
+    if (!demoOn) return;
+    const [type, ev, wait] = DEMO[i % DEMO.length];
+    if (type === 'stream') {
+      const toks = ev.text.match(/\S+\s*/g); let k = 0;
+      const tick = () => {
+        if (!demoOn) return;
+        if (k < toks.length) { handle({ type: 'token', agent: 'demo', text: toks[k++] }); demoT = setTimeout(tick, reduce ? 90 : 45); }
+        else demoT = setTimeout(() => demoStep(i + 1), 300);
+      };
+      tick(); return;
+    }
+    handle({ type, agent: 'demo', ...ev });
+    demoT = setTimeout(() => demoStep(i + 1), wait);
+  }
+  $('#demo').onclick = () => {
+    demoOn = !demoOn; $('#demo').classList.toggle('active', demoOn);
+    clearTimeout(demoT);
+    if (demoOn) demoStep(0); else handle({ type: 'idle', agent: 'demo' });
+  };
+  if (params.has('demo')) $('#demo').click();
+
+  // ---------- render loop ----------
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx = W / 2; cy = H / 2 - (W < 640 ? 40 : 0);
+    R = Math.min(W, H) * (W < 640 ? .33 : .36);
+  }
+  addEventListener('resize', resize);
+
+  function place(dt) {
+    rot += dt * .011 * (reduce ? .3 : 1);
+    const all = nodes.concat(sats);
+    for (const n of all) {
+      if (!n.ring) { n.x = cx; n.y = cy; continue; }
+      const wob = Math.sin(tNow * .0006 + n.seed) * .014;
+      const a = n.a + rot + Math.sin(tNow * .0004 + n.seed * 2) * .01;
+      const rr = (n.r + wob) * R;
+      n.x = cx + Math.cos(a) * rr; n.y = cy + Math.sin(a) * rr; n.ang = a;
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, .05); last = now; tNow = now;
+    const decay = Math.exp(-dt * 2.4);
+
+    // state-driven activity
+    if (state === 'idle') {
+      timers.idle -= dt;
+      if (timers.idle <= 0) {
+        timers.idle = rand(1.2, 3.2);
+        const n = pick(nodes); const m = pick(n.adj.map(e => other(e, n)).filter(x => x.ring < 4));
+        if (m) spawn(n, [m], mix(C.dim, C.ice, .6), .9, 1);
+      }
+    } else if (state === 'thinking') {
+      timers.think -= dt;
+      if (timers.think <= 0) {
+        timers.think = reduce ? .3 : rand(.05, .11);
+        const src = Math.random() < .4 ? nodes[0] : pick(nodes);
+        const m = pick(src.adj.map(e => other(e, src)).filter(x => x.ring < 4));
+        if (m) spawn(src, [m], C.ice, rand(1.4, 2.6), 2);
+      }
+    }
+    if ((state === 'done' || state === 'error') && tNow > settleAt) setState('idle');
+
+    place(dt);
+    for (let i = signals.length - 1; i >= 0; i--) if (!stepSignal(signals[i], dt)) signals.splice(i, 1);
+    for (let i = ripples.length - 1; i >= 0; i--) { ripples[i].t += dt * .7; if (ripples[i].t >= 1) ripples.splice(i, 1); }
+    reapSats();
+
+    // core breathing floor
+    const core = nodes[0];
+    const floor = state === 'thinking' ? .55 + .25 * Math.sin(tNow * .012)
+                : state === 'streaming' ? .7
+                : state === 'idle' ? .18 + .1 * Math.sin(tNow * .0018) : .3;
+    if (core.e < floor) { core.e = floor; if (state === 'idle') core.col = mix(C.dim, C.ice, .5); if (state === 'thinking') core.col = C.ice; }
+
+    // ---- draw ----
+    ctx.clearRect(0, 0, W, H);
+
+    // ambient halo behind the core
+    const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.25);
+    halo.addColorStop(0, rgba(core.col, .10 + core.e * .10)); halo.addColorStop(1, rgba(core.col, 0));
+    ctx.fillStyle = halo; ctx.fillRect(0, 0, W, H);
+
+    // edges
+    ctx.lineCap = 'round';
+    for (const e of edges) {
+      e.e *= decay;
+      ctx.strokeStyle = rgba(mix(C.dim, e.col, e.e), .22 + .7 * e.e);
+      ctx.lineWidth = .7 + 1.3 * e.e;
+      ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(e.b.x, e.b.y); ctx.stroke();
+    }
+
+    // ripples
+    for (const r of ripples) {
+      ctx.strokeStyle = rgba(r.col, (1 - r.t) * .35); ctx.lineWidth = r.w * (1 - r.t) + .3;
+      ctx.beginPath(); ctx.arc(cx, cy, r.t * R * 1.35, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // nodes + satellites
+    ctx.globalCompositeOperation = 'lighter';
+    const all = nodes.concat(sats);
+    for (const n of all) {
+      if (n.ring === 4) {
+        const age = Math.min(1, (tNow - n.born) / 400);
+        const life = n.alive ? 1 : Math.max(0, 1 - (tNow - n.died) / 1400);
+        n.e = n.alive ? (.55 + .35 * Math.sin(tNow * .008 + n.seed)) * age : n.e * decay;
+        const vis = age * life;
+        if (vis > 0) {
+          ctx.font = '12px "Avenir Next","Segoe UI",system-ui,sans-serif';
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = Math.cos(n.ang) >= 0 ? 'left' : 'right';
+          ctx.fillStyle = rgba(C.ember, .85 * vis);
+          ctx.fillText(n.name, n.x + Math.cos(n.ang) * 12, n.y + Math.sin(n.ang) * 12);
+        }
+        n.vis = vis;
+      } else n.e *= decay;
+
+      const base = n.ring === 0 ? 5 : n.ring === 1 ? 2.5 : n.ring === 2 ? 2.1 : n.ring === 3 ? 1.8 : 2.6;
+      const vis = n.ring === 4 ? n.vis : 1;
+      if (n.e > .04 && vis > 0) {
+        const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, base * 3 + n.e * 22);
+        g.addColorStop(0, rgba(n.col, .45 * n.e * vis)); g.addColorStop(1, rgba(n.col, 0));
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, base * 3 + n.e * 22, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = rgba(mix(C.dim, n.ring === 4 ? C.ember : n.col, Math.min(1, .35 + n.e)), (.9 * vis));
+      ctx.beginPath(); ctx.arc(n.x, n.y, (base + n.e * base * .8) * (n.ring === 4 ? Math.max(.01, vis) : 1), 0, Math.PI * 2); ctx.fill();
+    }
+
+    // signals
+    for (const s of signals) {
+      const t = s.t, tt = Math.max(0, t - .14);
+      const x = s.from.x + (s.to.x - s.from.x) * t, y = s.from.y + (s.to.y - s.from.y) * t;
+      const x0 = s.from.x + (s.to.x - s.from.x) * tt, y0 = s.from.y + (s.to.y - s.from.y) * tt;
+      const tail = ctx.createLinearGradient(x0, y0, x, y);
+      tail.addColorStop(0, rgba(s.col, 0)); tail.addColorStop(1, rgba(s.col, .9));
+      ctx.strokeStyle = tail; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillStyle = rgba(s.col, 1); ctx.beginPath(); ctx.arc(x, y, 1.7, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    requestAnimationFrame(frame);
+  }
+
+  build(); resize(); renderCaption(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
