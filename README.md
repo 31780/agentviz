@@ -102,10 +102,15 @@ of the whole system is the browser tab — `index.html` holds several thousand
 WebGL nodes, so on a machine under memory pressure prefer `--page 2d`, or cap
 the 3D field with `?n=1500`.
 
-Two properties make this safe to leave installed everywhere: the bridge never
-writes to stdout (Claude Code feeds hook stdout back into the model's context
-on some events), and it always exits 0 within a 250 ms timeout, so a relay
-that is down or gone can never slow down or wedge a coding session. Set
+Two properties make this safe to leave installed everywhere. Neither bridge
+writes to stdout, since Claude Code feeds hook stdout back into the model's
+context on some events. And both always exit 0 without stalling, so a relay
+that is down or gone can never wedge a coding session: the Python bridge
+bounds itself with a 250 ms request timeout, and the shell bridge relies on
+the TCP connect to a local relay failing immediately when nothing is
+listening. Point the shell bridge at a *remote* relay and that guarantee
+weakens to the kernel's connect timeout — use the Python bridge across a
+network. Set
 `AGENTVIZ_DISABLE=1` to mute either bridge. The Python one takes `AGENTVIZ_URL`
 and `AGENTVIZ_DEBUG=1`; the shell one takes `AGENTVIZ_HOST` and `AGENTVIZ_PORT`.
 
