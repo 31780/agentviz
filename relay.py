@@ -176,6 +176,22 @@ PAGES = {"index.html", "index-2d.html"}
 DEFAULT_PAGE = "index.html"      # overridden by --page
 
 
+class Relay(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """A client that hung up is not an error worth a traceback.
+
+        Left to the default, every fire-and-forget POST would log ~30 lines,
+        which on an always-on relay driven by editor hooks means a log file
+        that grows without bound.
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "agentviz-relay"
@@ -185,13 +201,19 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write("  %s\n" % (fmt % args))
 
     def _send(self, code, body=b"", ctype="text/plain; charset=utf-8"):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        # A fire-and-forget client -- the shell bridge is one -- posts an event
+        # and closes without reading the reply, so writing the response raises.
+        # That is a normal way for a client to behave here, not an error.
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -257,7 +279,7 @@ def main():
 
     threading.Thread(target=ws_server, args=(args.host, args.ws_port), daemon=True).start()
 
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    httpd = Relay((args.host, args.port), Handler)
     httpd.daemon_threads = True
     httpd.verbose = args.verbose
     httpd.default_page = "index-2d.html" if args.page == "2d" else "index.html"

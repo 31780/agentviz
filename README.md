@@ -205,6 +205,20 @@ curl -X POST localhost:8766/event -d '{"type":"thinking","agent":"hermes","text"
 
 Or open a WebSocket to `ws://localhost:8765` and send one JSON object per message.
 
+### Running it all the time
+
+On macOS, a launch agent keeps the relay up across logins and restarts it if it
+dies. `contrib/com.agentviz.relay.plist` is a template — edit the paths, then:
+
+```bash
+cp contrib/com.agentviz.relay.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agentviz.relay.plist
+launchctl print gui/$UID/com.agentviz.relay | grep state
+```
+
+To stop it, `launchctl bootout gui/$UID/com.agentviz.relay`. To restart after
+changing the relay, `launchctl kickstart -k gui/$UID/com.agentviz.relay`.
+
 If the agent runs on another box, run the relay there with
 `python3 relay.py --host 0.0.0.0` and open the page with
 `?ws=ws://that-host:8765`, or type the address into the field at the bottom of
