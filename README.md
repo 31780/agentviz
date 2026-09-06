@@ -9,6 +9,8 @@ relay.py              tiny relay: agents push events in, browsers subscribe
 agentviz.py           zero-dep Python emitter for your agents
 hooks/claude_code.sh  bridge that drives the field from Claude Code (fast)
 hooks/claude_code.py  the same bridge in portable Python
+hooks/codex.py        bridge that drives the field from Codex lifecycle hooks
+.codex/hooks.json     ready-to-use Codex hooks for this repository
 ```
 
 Python 3.8+ and a browser. No pip install, no build step, no dependencies —
@@ -76,6 +78,36 @@ you want to read what an agent is doing rather than watch it. A headless
 browser is *not* a cheaper way to run the visualiser: it is still a full
 browser, and nothing renders to a screen you can see, so you pay the cost and
 get no picture. Use headless only to screenshot or record the page.
+
+## Wire it into Codex
+
+This repository is already wired through `.codex/hooks.json`. Start the relay,
+open the page, then restart or resume Codex in this repository. Codex will ask
+you to review the project hook the first time; open `/hooks` and trust it.
+
+```bash
+python3 relay.py
+open http://localhost:8766
+```
+
+`UserPromptSubmit` sends `thinking` as soon as you submit a prompt, so the
+field animates for the whole active turn. `Stop` sends `response`; an interrupt
+or session end returns it to `idle`. Tool and subagent hooks add their own
+outbound and return pulses. The hook commands run in the background and the
+bridge treats the relay as optional, so this does not hold up Codex when the
+visualizer is closed.
+
+To use agentviz for every Codex project, copy the `hooks` object from
+`.codex/hooks.json` into `~/.codex/hooks.json` and replace each command with an
+absolute path to this checkout:
+
+```json
+"command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py"
+```
+
+Codex hooks expose turn, tool, and completion boundaries, but not private
+reasoning tokens. The animation therefore represents the actual lifetime of
+the turn; it does not attempt to display hidden chain-of-thought.
 
 ## Wire it into Claude Code
 
