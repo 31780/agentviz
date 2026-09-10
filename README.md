@@ -43,6 +43,15 @@ For a login-persistent setup, install both launchd jobs from `contrib/`:
 AI session hooks call `hooks/launch.sh`, which triggers `com.agentviz.open`.
 The job does not open a browser at login; it opens one when an AI session starts.
 
+To also open the visualizer in Brave when the Comet browser starts, install the
+optional `com.agentviz.comet` monitor. It checks only whether the Comet process
+has started; it does not inspect tabs or page contents:
+
+```bash
+cp contrib/com.agentviz.comet.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agentviz.comet.plist
+```
+
 `index.html` is the ambient view: pulses and brightness, deliberately no text.
 `index-2d.html` is the legible one — the caption names the tool and its
 argument (`Bash` / `python3 relay.py -v`), and the **Log** button opens a
