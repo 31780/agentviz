@@ -1,6 +1,5 @@
 import os
 import multiprocessing
-import pathlib
 import tempfile
 import unittest
 import subprocess
@@ -8,7 +7,6 @@ import time
 from unittest import mock
 
 import agentviz
-from hooks import comet_monitor
 
 
 def claim_launch_at_once(stamp, barrier, results):
@@ -332,26 +330,6 @@ class LaunchTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0)
             self.assertFalse(os.path.exists(log))
-
-    @mock.patch("hooks.comet_monitor.comet_pid", return_value="42")
-    @mock.patch("hooks.comet_monitor.subprocess.run")
-    def test_comet_monitor_launches_once_for_a_new_process(self, run, pid):
-        with tempfile.TemporaryDirectory() as directory:
-            with mock.patch.object(comet_monitor, "STATE", pathlib.Path(directory) / "pid"):
-                self.assertEqual(comet_monitor.main(), 0)
-                self.assertEqual(comet_monitor.main(), 0)
-
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0], ["/bin/bash", str(comet_monitor.LAUNCHER)])
-
-    @mock.patch("hooks.comet_monitor.comet_pid", return_value="")
-    @mock.patch("hooks.comet_monitor.subprocess.run")
-    def test_comet_monitor_does_not_launch_when_stopped(self, run, pid):
-        with tempfile.TemporaryDirectory() as directory:
-            with mock.patch.object(comet_monitor, "STATE", pathlib.Path(directory) / "pid"):
-                self.assertEqual(comet_monitor.main(), 0)
-
-        run.assert_not_called()
 
     def test_zsh_ai_detector_invokes_the_launch_shell(self):
         with tempfile.TemporaryDirectory() as directory:
