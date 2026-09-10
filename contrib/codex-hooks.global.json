@@ -1,0 +1,21 @@
+{
+  "description": "Open agentviz and drive it from Codex lifecycle events in every repository.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "bash /ABSOLUTE/PATH/TO/agentviz/hooks/launch.sh", "async": true, "timeout": 3},
+          {"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "async": true, "timeout": 2}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py", "timeout": 1}]}]
+  }
+}

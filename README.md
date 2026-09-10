@@ -7,6 +7,8 @@ index.html            the visualizer (raw WebGL, no build step, no dependencies)
 index-2d.html         the earlier small canvas version with captions and a log
 relay.py              tiny relay: agents push events in, browsers subscribe
 agentviz.py           zero-dep Python emitter for your agents
+hooks/launch.py       starts the relay if needed and opens the visualizer
+hooks/launch.sh       triggers the on-demand launchd opener, with a fallback
 hooks/claude_code.sh  bridge that drives the field from Claude Code (fast)
 hooks/claude_code.py  the same bridge in portable Python
 hooks/codex.py        bridge that drives the field from Codex lifecycle hooks
@@ -22,6 +24,24 @@ the relay speaks WebSocket straight from the standard library.
 python3 relay.py          # serves the page + relays events
 open http://localhost:8766
 ```
+
+Or start the relay if needed and open the page in one command:
+
+```bash
+python3 agentviz.py launch
+```
+
+On macOS the launcher opens the page in Brave, even when another browser is
+the system default. Direct launches can set `AGENTVIZ_BROWSER` to override it;
+the launchd job pins `AGENTVIZ_BROWSER` to Brave in its plist.
+
+For a login-persistent setup, install both launchd jobs from `contrib/`:
+
+- `com.agentviz.relay` keeps the lightweight event relay running.
+- `com.agentviz.open` is an on-demand job that opens the page in Brave.
+
+AI session hooks call `hooks/launch.sh`, which triggers `com.agentviz.open`.
+The job does not open a browser at login; it opens one when an AI session starts.
 
 `index.html` is the ambient view: pulses and brightness, deliberately no text.
 `index-2d.html` is the legible one — the caption names the tool and its
@@ -107,6 +127,10 @@ absolute path to this checkout:
 "command": "python3 /ABSOLUTE/PATH/TO/agentviz/hooks/codex.py"
 ```
 
+Keep the `hooks/launch.sh` command in the global `SessionStart` hook too. It
+asks launchd to open the page when a new Codex session begins and falls back to
+the direct launcher when the on-demand LaunchAgent is not installed.
+
 Codex hooks expose turn, tool, and completion boundaries, but not private
 reasoning tokens. The animation therefore represents the actual lifetime of
 the turn; it does not attempt to display hidden chain-of-thought.
@@ -120,7 +144,10 @@ fires in every repo) or to a single project's `.claude/settings.json`:
 ```json
 {
   "hooks": {
-    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
+    "SessionStart":     [{ "hooks": [
+      { "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/launch.sh" },
+      { "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }
+    ] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
     "PreToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
     "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/ABSOLUTE/PATH/TO/agentviz/hooks/claude_code.sh" }] }],
@@ -167,6 +194,17 @@ when `jq` is absent, so use `claude_code.sh` unless you need pure portability.
 
 Neither bridge leaves anything resident: the cost is process startup, paid per
 event and returned immediately.
+
+To open agentviz whenever a terminal AI starts, source the zsh integration:
+
+```bash
+source /ABSOLUTE/PATH/TO/agentviz/contrib/agentviz.zsh
+```
+
+It recognizes Codex, Claude, Aider, Gemini, OpenCode, Cursor Agent, Amp, Pi,
+Goose, and Qwen Code. Override or extend the list before sourcing with the zsh
+array `AGENTVIZ_AI_COMMANDS`. Session hooks and the shell hook share an
+eight-second cooldown, so starting one AI opens one tab rather than two.
 
 The relay itself is ~19 MB resident and idles at zero CPU. The expensive part
 of the whole system is the browser tab — `index.html` holds several thousand
@@ -241,17 +279,20 @@ Or open a WebSocket to `ws://localhost:8765` and send one JSON object per messag
 
 ### Running it all the time
 
-On macOS, a launch agent keeps the relay up across logins and restarts it if it
-dies. `contrib/com.agentviz.relay.plist` is a template — edit the paths, then:
+On macOS, one launch agent keeps the relay up across logins and another opens
+Brave on demand. Both files are templates — edit their absolute paths, then:
 
 ```bash
-cp contrib/com.agentviz.relay.plist ~/Library/LaunchAgents/
+cp contrib/com.agentviz.relay.plist contrib/com.agentviz.open.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agentviz.relay.plist
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agentviz.open.plist
 launchctl print gui/$UID/com.agentviz.relay | grep state
+launchctl print gui/$UID/com.agentviz.open | grep state
 ```
 
-To stop it, `launchctl bootout gui/$UID/com.agentviz.relay`. To restart after
-changing the relay, `launchctl kickstart -k gui/$UID/com.agentviz.relay`.
+To remove them, run `launchctl bootout` for each service label. To restart the
+relay after changing it, run
+`launchctl kickstart -k gui/$UID/com.agentviz.relay`.
 
 If the agent runs on another box, run the relay there with
 `python3 relay.py --host 0.0.0.0` and open the page with

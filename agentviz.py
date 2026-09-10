@@ -20,12 +20,16 @@ timeout, and failures are swallowed unless you pass strict=True.
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_URL = os.environ.get("AGENTVIZ_URL", "http://127.0.0.1:8766/event")
+DEFAULT_PAGE_URL = os.environ.get("AGENTVIZ_PAGE_URL", "http://127.0.0.1:8766")
 
 
 class Viz:
@@ -82,6 +86,156 @@ class Viz:
             if self.strict:
                 raise
             return False
+
+
+# ---------------------------------------------------------------- launch
+
+def _health_url(page_url):
+    """Return the relay health endpoint for a visualizer page URL."""
+    parts = urllib.parse.urlsplit(page_url)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/healthz", "", ""))
+
+
+def _relay_is_ready(page_url, timeout=0.2):
+    try:
+        with urllib.request.urlopen(_health_url(page_url), timeout=timeout) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _claim_launch(cooldown, stamp_path=None):
+    """Lock this launch window; return an fd, -1 without locking, or False if recent."""
+    stamp_path = stamp_path or os.path.join(
+        tempfile.gettempdir(), "agentviz-launch-%s.stamp" % getattr(os, "getuid", lambda: 0)()
+    )
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(stamp_path, flags, 0o600)
+    except OSError:
+        # A read-only temp directory should not stop the visualizer opening.
+        return -1
+    try:
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except ImportError:
+            pass
+        now = time.time()
+        stamp = os.fstat(fd)
+        if stamp.st_size > 0 and now - stamp.st_mtime < cooldown:
+            os.close(fd)
+            return False
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _finish_launch(claim, succeeded):
+    """Record a successful open and release the inter-process launch lock."""
+    if claim == -1:
+        return
+    try:
+        if succeeded:
+            now = time.time()
+            os.ftruncate(claim, 0)
+            os.write(claim, str(now).encode("ascii"))
+    finally:
+        os.close(claim)
+
+
+def _start_relay(page="2d", page_url=DEFAULT_PAGE_URL):
+    parts = urllib.parse.urlsplit(page_url)
+    if parts.scheme != "http" or parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+    try:
+        port = parts.port or 80
+    except ValueError:
+        return None
+
+    is_default_endpoint = parts.hostname == "127.0.0.1" and port == 8766
+    if sys.platform == "darwin" and is_default_endpoint:
+        job = "gui/%s/com.agentviz.relay" % getattr(os, "getuid", lambda: 0)()
+        installed = subprocess.run(
+            ["/bin/launchctl", "print", job],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if installed.returncode == 0:
+            restarted = subprocess.run(
+                ["/bin/launchctl", "kickstart", "-k", job],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if restarted.returncode == 0:
+                return restarted
+    command = [
+        sys.executable,
+        os.path.join(os.path.dirname(__file__), "relay.py"),
+        "--host", parts.hostname,
+        "--port", str(port),
+        "--page", page,
+    ]
+    return subprocess.Popen(
+        command,
+        cwd=os.path.dirname(__file__),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _open_page(page_url):
+    if sys.platform == "darwin":
+        browser = os.environ.get("AGENTVIZ_BROWSER", "Brave Browser")
+        subprocess.Popen(
+            ["/usr/bin/open", "-a", browser, page_url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    import webbrowser
+    webbrowser.open(page_url, new=2)
+
+
+def launch(page_url=DEFAULT_PAGE_URL, cooldown=None):
+    """Ensure the relay is alive and open its page once per AI session start."""
+    if os.environ.get("AGENTVIZ_DISABLE") == "1":
+        return False
+    if cooldown is None:
+        try:
+            cooldown = float(os.environ.get("AGENTVIZ_LAUNCH_COOLDOWN", "8"))
+        except ValueError:
+            cooldown = 8.0
+    claim = _claim_launch(max(0.0, cooldown))
+    if claim is False:
+        return False
+
+    succeeded = False
+    try:
+        if not _relay_is_ready(page_url):
+            _start_relay(os.environ.get("AGENTVIZ_PAGE", "2d"), page_url)
+            for _ in range(20):
+                if _relay_is_ready(page_url):
+                    break
+                time.sleep(0.05)
+            else:
+                return False
+        _open_page(page_url)
+        succeeded = True
+        return True
+    finally:
+        _finish_launch(claim, succeeded)
 
 
 # ------------------------------------------------------------------- run
@@ -344,6 +498,9 @@ if __name__ == "__main__":
     url = args[1] if len(args) > 1 else DEFAULT_URL
     if args and args[0] == "demo":
         sys.exit(demo(url))
+    if args and args[0] == "launch":
+        page_url = args[1] if len(args) > 1 else DEFAULT_PAGE_URL
+        sys.exit(0 if launch(page_url) else 0)
     if args and args[0] == "run":
         rest, agent = args[1:], None
         while rest:
@@ -367,5 +524,6 @@ if __name__ == "__main__":
         sys.exit(watch(ws, color=sys.stdout.isatty() and "--no-color" not in args))
     print(__doc__.strip())
     print("\nusage: python3 agentviz.py demo  [relay-url]     drive the field")
+    print("       python3 agentviz.py launch [page-url]     start and open the field")
     print("       python3 agentviz.py watch [ws-url]        follow it in the terminal")
     print("       python3 agentviz.py run -- <command>      narrate any agent")
